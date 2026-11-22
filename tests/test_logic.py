@@ -83,6 +83,13 @@ class FakePage:
         return types.SimpleNamespace(status=200)
 
     def evaluate(self, script, arg=None):
+        # 整组图片快路径：第 1 页的隐藏域里带着所有图片地址
+        if "imgData" in script and self.ctx.whole_urls:
+            return {
+                "found": [{"name": "imgData", "raw": "\n".join(self.ctx.whole_urls)}],
+                "visible": 4,
+                "longest": "",
+            }
         # 平滑滚动器（页面内 rAF）：假页面没法真跑 rAF，直接把“应走的位移”一次落地，
         # 这样断言距离、到底判定和真实环境一致。
         if "__autoScroll" in script:
@@ -95,7 +102,8 @@ class FakePage:
                 self.ctx.scrolled[self.idx] = self.ctx.scrolled.get(self.idx, 0) + moved
             return True
         if "naturalWidth" in script:
-            return {"n": 4, "bad": 0}
+            total = len(self.ctx.whole_urls) if self.ctx.whole_urls else 4
+            return {"n": total, "loaded": total, "pending": 0, "failed": 0, "total": total}
         if "scrollHeight" in script and "innerHeight" in script:
             return self.ctx.page_height - 860
         if "innerHTML" in script and "sels" in script:
@@ -106,7 +114,7 @@ class FakePage:
             self.ctx.injected = arg
             return None
         if "document.images.length" in script:
-            return 4
+            return len(self.ctx.whole_urls) if self.ctx.whole_urls else 4
         if "scrollHeight" in script:
             return self.ctx.page_height
         if "querySelector" in script:
@@ -145,13 +153,14 @@ class FakePage:
 
 class FakeContext:
     def __init__(self, new_tab_on_click=False, not_found_from=None, empty_from=None,
-                 page_height=600):
+                 page_height=600, whole_urls=None):
         self.scrolled = {}
         self.clicks = 0
         self.gotos = []
         self.goto_index = 1
         self.injected = None
         self.page_height = page_height
+        self.whole_urls = whole_urls
         self.new_tab_on_click = new_tab_on_click
         self.not_found_from = not_found_from
         self.empty_from = empty_from
@@ -353,7 +362,8 @@ def case_merge():
     logs = []
     ctl = app.Controller()
     cfg = app.Config(url="https://www.nnao.cc/Articles/Content/3738.html", pages=3,
-                     distance=3000, speed=5000, settle=0, page_mode="merge", keep_login=True)
+                     distance=3000, speed=5000, settle=0, page_mode="merge",
+                     whole_first=False, keep_login=True)
     threading.Timer(0.6, ctl.stop).start()
     app.run_job(cfg, logs.append, ctl, headless=True)
 
@@ -363,7 +373,31 @@ def case_merge():
     assert ctx.injected and "merged-auto" in ctx.injected, "合并后的 HTML 没有注入页面"
     assert ctx.injected.count("<img") == 3, ctx.injected
     assert any("已合并 3 页" in line for line in logs), logs
+    assert not ctx.scrolled, f"合并后不应自动滚动：{ctx.scrolled}"
+    assert any("未自动滚动" in line for line in logs), logs
     print("case_merge OK", [u.rsplit("/", 1)[-1] for u in ctx.gotos])
+
+
+def case_merge_whole_list():
+    """快路径：第 1 页就带整组地址 → 只打开一次、不翻页、不自动滚动。"""
+    urls = [f"https://fake.local/img/{i}.jpg" for i in range(1, 6)]
+    ctx = FakeContext(whole_urls=urls)
+    install_fake(ctx)
+    logs = []
+    ctl = app.Controller()
+    cfg = app.Config(url="https://www.nnao.cc/Articles/Content/3738.html", pages=21,
+                     distance=3000, speed=5000, settle=0, page_mode="merge", keep_login=True)
+    threading.Timer(0.4, ctl.stop).start()
+    app.run_job(cfg, logs.append, ctl, headless=True)
+
+    assert ctx.gotos == ["https://www.nnao.cc/Articles/Content/3738.html"], ctx.gotos
+    assert ctx.clicks == 0, "整组快路径不应点击下一页"
+    assert ctx.injected and ctx.injected.count("<img") == 5, "应按原顺序排成 5 张图"
+    assert [u for u in urls if u in ctx.injected] == urls, "图片顺序应保持原顺序"
+    assert not ctx.scrolled, f"合并后不应自动滚动：{ctx.scrolled}"
+    assert any("整组图片地址" in line for line in logs), logs
+    assert any("未自动滚动" in line for line in logs), logs
+    print("case_merge_whole_list OK", ctx.gotos)
 
 
 def case_merge_stops_at_empty():
@@ -372,12 +406,13 @@ def case_merge_stops_at_empty():
     logs = []
     ctl = app.Controller()
     cfg = app.Config(url="https://a.com/x/3738.html", pages=6, distance=3000, speed=5000,
-                     settle=0, page_mode="merge", keep_login=True)
+                     settle=0, page_mode="merge", whole_first=False, keep_login=True)
     threading.Timer(0.6, ctl.stop).start()
     app.run_job(cfg, logs.append, ctl, headless=True)
     assert len(ctx.gotos) == 4, ctx.gotos
     assert any("正文容器是空的" in line for line in logs), logs
     assert ctx.injected.count("<img") == 3, "只应合并前 3 页"
+    assert not ctx.scrolled, f"合并后不应自动滚动：{ctx.scrolled}"
     print("case_merge_stops_at_empty OK")
 
 
@@ -477,6 +512,7 @@ if __name__ == "__main__":
     case_url_mode_404()
     case_url_mode_empty()
     case_merge()
+    case_merge_whole_list()
     case_merge_stops_at_empty()
     case_scroll_only()
     case_rescroll()

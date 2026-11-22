@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import app  # noqa: E402
+import merge  # noqa: E402
 
 SVG_SRC = ("<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'>"
            "<rect width='100%' height='100%' fill='green'/></svg>")
@@ -51,7 +51,7 @@ def main():
         browser = p.chromium.launch(channel="msedge", headless=True)
         ctx = browser.new_context(viewport={"width": 1600, "height": 900})
         page = ctx.new_page()
-        page.set_content(app._merged_document(BODY, "布局测试"), wait_until="domcontentloaded")
+        page.set_content(merge._merged_document(BODY, "布局测试"), wait_until="domcontentloaded")
         page.wait_for_function(
             "() => Array.from(document.images).every(i => i.complete && i.naturalWidth > 0)",
             timeout=10000,

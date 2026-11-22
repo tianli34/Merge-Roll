@@ -11,7 +11,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import app  # noqa: E402
+import browser_core
+import merge
 
 BASE = "https://www.nnao.cc/Articles/Content/3738.html"
 PATHS = [
@@ -29,34 +30,34 @@ def b64(text: str) -> str:
 
 def test_b64_pipe_list():
     raw = "|".join(b64(p) for p in PATHS)
-    assert app._parse_img_list(raw) == PATHS, app._parse_img_list(raw)
+    assert merge._parse_img_list(raw) == PATHS, merge._parse_img_list(raw)
     print("ok  base64 竖线列表")
 
 
 def test_json_array():
     raw = 'var imgs = ["/a/1.jpg", "/a/2.png", "https://cdn.x.com/3.webp"];'
-    got = app._parse_img_list(raw)
+    got = merge._parse_img_list(raw)
     assert got == ["/a/1.jpg", "/a/2.png", "https://cdn.x.com/3.webp"], got
     print("ok  脚本里的图片数组")
 
 
 def test_line_list():
     raw = "\n".join(PATHS)
-    assert app._parse_img_list(raw) == PATHS
+    assert merge._parse_img_list(raw) == PATHS
     print("ok  逐行列表")
 
 
 def test_not_a_list():
-    assert app._parse_img_list("short") == []
-    assert app._parse_img_list("<html>这是一篇普通文章</html>") == []
+    assert merge._parse_img_list("short") == []
+    assert merge._parse_img_list("<html>这是一篇普通文章</html>") == []
     # base64 解出来不是图片（例如 ViewState）不能当成图片地址
-    assert app._parse_img_list("|".join([b64("not an image"), b64("still not")])) == []
+    assert merge._parse_img_list("|".join([b64("not an image"), b64("still not")])) == []
     print("ok  非图片数据不会被误判")
 
 
 def test_normalize():
     urls = ["/x/1.jpg", "/x/1.jpg", "2.jpg", "https://other/3.jpg", "/grey.gif", "/img/blank.png"]
-    got = app._normalize_urls(urls, BASE)
+    got = merge._normalize_urls(urls, BASE)
     assert got == [
         "https://www.nnao.cc/x/1.jpg",
         "https://www.nnao.cc/Articles/Content/2.jpg",
@@ -66,7 +67,7 @@ def test_normalize():
 
 
 def test_document_order():
-    doc = app._images_document(["https://a/1.jpg", "https://a/2.jpg?a=1&b=2"], "note")
+    doc = merge._images_document(["https://a/1.jpg", "https://a/2.jpg?a=1&b=2"], "note")
     assert doc.index("1.jpg") < doc.index("2.jpg"), "顺序必须保持"
     assert "a=1&amp;b=2" in doc, "地址里的 & 要转义"
     assert doc.count("<img ") == 2
@@ -76,9 +77,9 @@ def test_document_order():
 
 
 def test_wait_budget():
-    assert app._wait_budget(81) == 243, app._wait_budget(81)
-    assert app._wait_budget(4) == 60, "张数少时走 60 秒下限"
-    assert app._wait_budget(1000) == 420, "再长也要封顶"
+    assert merge._wait_budget(81) == 243, merge._wait_budget(81)
+    assert merge._wait_budget(4) == 60, "张数少时走 60 秒下限"
+    assert merge._wait_budget(1000) == 420, "再长也要封顶"
     print("ok  等图预算按张数放大（81 张 → 243s），有上下限")
 
 
@@ -104,7 +105,7 @@ class WaitCtl:
 def test_wait_images_budget():
     page = WaitPage()
     t0 = time.time()
-    app._wait_images(page, WaitCtl(), 1.2, min_width=1, label="测试 ", steady=30.0,
+    browser_core._wait_images(page, WaitCtl(), 1.2, min_width=1, label="测试 ", steady=30.0,
                      log=lambda s: None)
     spent = time.time() - t0
     assert spent < 4, f"超出预算：{spent:.1f}s"
@@ -124,7 +125,7 @@ class FakePage:
 def test_collect_whole():
     raw = "|".join(b64(p) for p in PATHS)
     page = FakePage({"found": [{"name": "imgData", "raw": raw}], "visible": 4, "longest": ""})
-    urls, src = app._collect_whole_image_urls(page)
+    urls, src = merge._collect_whole_image_urls(page)
     assert len(urls) == 5 and src == "#imgData", (urls, src)
     assert urls[0] == "https://www.nnao.cc/LoadImage.ashx/aaa111.jpg"
     print("ok  第 1 页取出整组地址（5 张 > 本页 4 张）")
@@ -134,7 +135,7 @@ def test_collect_rejects_same_page():
     """整组数量不比本页多，说明只是本页那几张，应该照旧逐页合并。"""
     raw = "|".join(b64(p) for p in PATHS[:4])
     page = FakePage({"found": [{"name": "imgData", "raw": raw}], "visible": 4, "longest": ""})
-    urls, src = app._collect_whole_image_urls(page)
+    urls, src = merge._collect_whole_image_urls(page)
     assert urls == [] and src == "", (urls, src)
     print("ok  不把“本页 4 张”误判成整组")
 
@@ -143,7 +144,7 @@ def test_collect_script_fallback():
     longest = 'var list = ["/i/1.jpg","/i/2.jpg","/i/3.jpg","/i/4.jpg",' \
               '"/i/5.jpg","/i/6.jpg","/i/7.jpg","/i/8.jpg"];'
     page = FakePage({"found": [], "visible": 2, "longest": longest})
-    urls, src = app._collect_whole_image_urls(page)
+    urls, src = merge._collect_whole_image_urls(page)
     assert len(urls) == 8 and "脚本" in src, (urls, src)
     print("ok  脚本数组兜底（>=8 张且远多于本页）")
 
@@ -155,8 +156,8 @@ def test_collect_handles_garbage():
         def evaluate(self, script, arg=None):
             raise RuntimeError("boom")
 
-    assert app._collect_whole_image_urls(Broken()) == ([], "")
-    assert app._collect_whole_image_urls(FakePage(None)) == ([], "")
+    assert merge._collect_whole_image_urls(Broken()) == ([], "")
+    assert merge._collect_whole_image_urls(FakePage(None)) == ([], "")
     print("ok  拿不到数据时安全返回空")
 
 
